@@ -1,29 +1,26 @@
 这是2025天池NLP新闻分类学习赛仓库
 
-依赖安装 (使用 uv 包管理器):
+准备：
 
-```bash
-# 在项目根目录执行以下命令安装必要依赖：
-uv add pandas scikit-learn joblib
-```
+需要将比赛官方提供的训练和测试csv放入data文件夹下。
 
 训练：
 
 ```bash
 # 使用默认数据路径 data/train_set.csv
-python main.py train --train-csv data/train_set.csv --model-out models/model.joblib
+uv run main.py train --train-csv data/train_set.csv --model-out models/model.joblib
 ```
 
 推理（单条文本）：
 
 ```bash
-python main.py infer --text "这是一条待分类的新闻文本"
+uv run main.py infer --text "这是一条待分类的新闻文本"
 ```
 
 推理（对 CSV 批量预测）：
 
 ```bash
-python main.py infer --input-csv data/test_a.csv --output-csv predictions.csv
+uv run main.py infer --input-csv data/test_a.csv --output-csv predictions.csv
 ```
 
 可插拔模型说明：
@@ -32,7 +29,7 @@ python main.py infer --input-csv data/test_a.csv --output-csv predictions.csv
 
 ```bash
 # 使用自定义类 my_models.py 中的 MyTransformerModel
-python main.py train --model-spec my_models:MyTransformerModel --train-csv data/train_set.csv --model-out models/model_transformer.joblib
+uv run main.py train --model-spec my_models:MyTransformerModel --train-csv data/train_set.csv --model-out models/model_transformer.joblib
 ```
 
 - `--model-spec` 支持：
