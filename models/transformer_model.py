@@ -217,15 +217,31 @@ class TransformerModel(BaseModel):
         learning_rate = kwargs.get("learning_rate", 1e-4)
         val_split = kwargs.get("val_split", 0.1)
 
+        logger.info("="*60)
+        logger.info("Starting Transformer Model Training")
+        logger.info("="*60)
+        logger.info(f"Training samples: {len(X)}")
+        logger.info(f"Hyperparameters:")
+        logger.info(f"  - Epochs: {epochs}")
+        logger.info(f"  - Batch size: {batch_size}")
+        logger.info(f"  - Learning rate: {learning_rate}")
+        logger.info(f"  - Validation split: {val_split}")
+        logger.info(f"  - Device: {self.device}")
+
         # 构建词汇表
         if not self.tokenizer.vocab_built:
+            logger.info("-"*60)
             logger.info("Building vocabulary from training data...")
             self.tokenizer.build_vocab(X)
 
         # 编码标签
         if self.label_encoder is None:
+            logger.info("-"*60)
+            logger.info("Encoding labels...")
             self.label_encoder = LabelEncoder()
             y_enc = self.label_encoder.fit_transform(y)
+            logger.info(f"Number of classes: {len(self.label_encoder.classes_)}")
+            logger.info(f"Classes: {self.label_encoder.classes_}")
         else:
             y_enc = self.label_encoder.transform(y)
 
@@ -237,7 +253,17 @@ class TransformerModel(BaseModel):
             self.model = None  # 重新初始化
 
         # 初始化模型
+        logger.info("-"*60)
+        logger.info("Initializing model...")
         self._init_model()
+        total_params = sum(p.numel() for p in self.model.parameters())
+        trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        logger.info(f"Model architecture:")
+        logger.info(f"  - d_model: {self.d_model}")
+        logger.info(f"  - num_layers: {self.num_layers}")
+        logger.info(f"  - nhead: {self.nhead}")
+        logger.info(f"  - Total parameters: {total_params:,}")
+        logger.info(f"  - Trainable parameters: {trainable_params:,}")
 
         # 分割训练/验证集
         if val_split > 0:

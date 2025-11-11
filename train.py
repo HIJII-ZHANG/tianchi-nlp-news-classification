@@ -7,6 +7,12 @@ from sklearn.metrics import classification_report
 from data_utils import load_data
 from models.registry import load_model_class
 
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 logger = logging.getLogger(__name__)
 
 
