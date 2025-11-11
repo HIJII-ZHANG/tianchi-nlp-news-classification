@@ -4,6 +4,8 @@
 
 需要将比赛官方提供的训练和测试csv放入data文件夹下。
 
+uv 包管理器安装：[https://uv.doczh.com/getting-started/installation/](https://uv.doczh.com/getting-started/installation/)
+
 训练：
 
 ```bash
