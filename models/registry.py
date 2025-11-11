@@ -23,11 +23,15 @@ def load_model_class(spec: str):
 
     Supported specs:
     - 'sklearn' -> models.sklearn_model.SklearnModel
+    - 'transformer' -> models.transformer_model.TransformerModel
     - full import path 'models.sklearn_model.SklearnModel'
     - 'module:Class'
     """
     if spec in ("sklearn", "sklearn_model"):
         return import_from_string("models.sklearn_model.SklearnModel")
+    
+    if spec in ("transformer", "transformer_model"):
+        return import_from_string("models.transformer_model.TransformerModel")
 
     # otherwise assume it's an import path
     return import_from_string(spec)
