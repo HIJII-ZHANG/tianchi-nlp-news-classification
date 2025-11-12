@@ -54,9 +54,10 @@ def predict_csv(model_path: str, input_csv: str, output_csv: str):
 
     preds = model.predict(texts)
     probs = model.predict_proba(texts)
-    df_out = pd.DataFrame({"prediction": preds})
-    if probs is not None:
-        df_out["score"] = probs
+    df_out = pd.DataFrame({"label": preds})
+    #if probs is not None:
+    #    df_out["score"] = probs
+
 
     save_predictions(df_out, output_csv)
     print(f"Saved predictions to {output_csv}")
