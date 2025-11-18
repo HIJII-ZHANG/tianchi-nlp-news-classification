@@ -62,11 +62,13 @@ python main.py train \
 ## 🔧 关键优化点
 
 ### 1. 模型容量翻倍
+
 - 参数量: 21M → 40M
 - 维度: 512 → 768 (BERT-base标准)
 - 深度: 6层 → 8层
 
 ### 2. 学习率调度
+
 ```python
 # Warmup (前10%步数线性增长)
 if step < warmup_steps:
@@ -79,6 +81,7 @@ else:
 ```
 
 ### 3. 标签平滑
+
 ```python
 # 原始: [0, 0, 1, 0, 0]
 # 平滑: [0.007, 0.007, 0.964, 0.007, 0.007]
@@ -86,6 +89,7 @@ else:
 ```
 
 ### 4. 梯度累积
+
 ```python
 # 实际batch=16，累积2步
 # 等效batch=32，减少内存占用
@@ -98,6 +102,7 @@ for step in range(0, len(data), 16):
 ```
 
 ### 5. 更长序列
+
 - 旧: 512 tokens (覆盖90%样本)
 - 新: 1024 tokens (覆盖95%样本)
 - 效果: 更完整的上下文理解
@@ -107,6 +112,7 @@ for step in range(0, len(data), 16):
 如果95%还不够，可以尝试：
 
 ### 1. 集成学习
+
 ```bash
 # 训练3个模型
 python main.py train --model-spec bert --model-out models/bert_1.pt --epochs 15
@@ -118,11 +124,13 @@ python main.py train --model-spec bert --model-out models/bert_3.pt --epochs 15
 ```
 
 ### 2. 数据增强
+
 - 随机删除token (10%)
 - 随机交换相邻token
 - 回译 (如果有映射表)
 
 ### 3. 类别权重
+
 ```python
 # 针对类别不平衡
 class_weights = compute_class_weight('balanced', classes=unique_labels, y=labels)
@@ -130,6 +138,7 @@ criterion = nn.CrossEntropyLoss(weight=class_weights)
 ```
 
 ### 4. Focal Loss
+
 ```python
 # 聚焦难分类样本
 class FocalLoss(nn.Module):
@@ -147,6 +156,7 @@ class FocalLoss(nn.Module):
 ## 📝 训练监控
 
 训练时关注：
+
 - ✅ **训练准确率**: 应持续上升到95%+
 - ✅ **验证准确率**: 目标95%+
 - ✅ **Loss收敛**: 应持续下降
