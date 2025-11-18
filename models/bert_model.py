@@ -259,16 +259,19 @@ class BERTTextClassifier(BaseModel):
 
     def __init__(
         self,
-        vocab_size: int = 5000,
-        d_model: int = 512,
-        num_layers: int = 6,
-        num_heads: int = 8,
-        d_ff: int = 2048,
-        max_length: int = 512,
-        batch_size: int = 32,
-        learning_rate: float = 1e-4,
-        epochs: int = 10,
-        dropout: float = 0.1,
+        vocab_size: int = 6000,
+        d_model: int = 768,
+        num_layers: int = 8,
+        num_heads: int = 12,
+        d_ff: int = 3072,
+        max_length: int = 1024,
+        batch_size: int = 16,
+        learning_rate: float = 2e-5,
+        epochs: int = 15,
+        dropout: float = 0.15,
+        warmup_ratio: float = 0.1,
+        label_smoothing: float = 0.1,
+        gradient_accumulation_steps: int = 2,
         device: Optional[str] = None,
     ):
         """
@@ -297,6 +300,9 @@ class BERTTextClassifier(BaseModel):
         self.learning_rate = learning_rate
         self.epochs = epochs
         self.dropout = dropout
+        self.warmup_ratio = warmup_ratio
+        self.label_smoothing = label_smoothing
+        self.gradient_accumulation_steps = gradient_accumulation_steps
 
         # 设置设备
         if device is None:
@@ -356,12 +362,36 @@ class BERTTextClassifier(BaseModel):
 
         logger.info(f"Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
 
-        # 优化器
-        optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.learning_rate, weight_decay=0.01)
-        criterion = nn.CrossEntropyLoss()
+        # 优化器和学习率调度
+        optimizer = torch.optim.AdamW(
+            self.model.parameters(),
+            lr=self.learning_rate,
+            weight_decay=0.01,
+            betas=(0.9, 0.999),
+            eps=1e-8
+        )
+
+        # 计算总训练步数
+        total_steps = len(train_loader) * self.epochs // self.gradient_accumulation_steps
+        warmup_steps = int(total_steps * self.warmup_ratio)
+
+        # 学习率调度器：warmup + cosine decay
+        def get_lr_multiplier(step):
+            if step < warmup_steps:
+                return float(step) / float(max(1, warmup_steps))
+            progress = float(step - warmup_steps) / float(max(1, total_steps - warmup_steps))
+            return max(0.0, 0.5 * (1.0 + math.cos(math.pi * progress)))
+
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, get_lr_multiplier)
+
+        # 损失函数：标签平滑
+        criterion = nn.CrossEntropyLoss(label_smoothing=self.label_smoothing)
+
+        logger.info(f"Training config: warmup_steps={warmup_steps}, total_steps={total_steps}, gradient_accumulation={self.gradient_accumulation_steps}")
 
         # 训练循环
         best_val_acc = 0.0
+        global_step = 0
         for epoch in range(self.epochs):
             # 训练阶段
             self.model.train()
@@ -374,24 +404,30 @@ class BERTTextClassifier(BaseModel):
                 attention_mask = batch['attention_mask'].to(self.device)
                 labels = batch['labels'].to(self.device)
 
-                optimizer.zero_grad()
-
                 logits = self.model(input_ids, attention_mask)
                 loss = criterion(logits, labels)
 
+                # 梯度累积
+                loss = loss / self.gradient_accumulation_steps
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                optimizer.step()
 
-                train_loss += loss.item()
+                if (batch_idx + 1) % self.gradient_accumulation_steps == 0:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    optimizer.step()
+                    scheduler.step()
+                    optimizer.zero_grad()
+                    global_step += 1
+
+                train_loss += loss.item() * self.gradient_accumulation_steps
                 _, predicted = torch.max(logits, 1)
                 train_total += labels.size(0)
                 train_correct += (predicted == labels).sum().item()
 
-                if (batch_idx + 1) % 10 == 0:
+                if (batch_idx + 1) % (10 * self.gradient_accumulation_steps) == 0:
+                    current_lr = scheduler.get_last_lr()[0]
                     logger.info(
                         f"Epoch {epoch+1}/{self.epochs} - Batch {batch_idx+1}/{len(train_loader)} - "
-                        f"Loss: {loss.item():.4f} - Acc: {100 * train_correct / train_total:.2f}%"
+                        f"Loss: {loss.item() * self.gradient_accumulation_steps:.4f} - Acc: {100 * train_correct / train_total:.2f}% - LR: {current_lr:.2e}"
                     )
 
             train_acc = 100 * train_correct / train_total
@@ -505,6 +541,9 @@ class BERTTextClassifier(BaseModel):
             'd_ff': self.d_ff,
             'max_length': self.max_length,
             'dropout': self.dropout,
+            'warmup_ratio': self.warmup_ratio,
+            'label_smoothing': self.label_smoothing,
+            'gradient_accumulation_steps': self.gradient_accumulation_steps,
         }
 
         torch.save(checkpoint, path)
@@ -517,13 +556,16 @@ class BERTTextClassifier(BaseModel):
 
         # 创建模型实例
         instance = cls(
-            vocab_size=checkpoint['vocab_size'],
-            d_model=checkpoint['d_model'],
-            num_layers=checkpoint['num_layers'],
-            num_heads=checkpoint['num_heads'],
-            d_ff=checkpoint['d_ff'],
-            max_length=checkpoint['max_length'],
-            dropout=checkpoint['dropout'],
+            vocab_size=checkpoint.get('vocab_size', 5000),
+            d_model=checkpoint.get('d_model', 512),
+            num_layers=checkpoint.get('num_layers', 6),
+            num_heads=checkpoint.get('num_heads', 8),
+            d_ff=checkpoint.get('d_ff', 2048),
+            max_length=checkpoint.get('max_length', 512),
+            dropout=checkpoint.get('dropout', 0.1),
+            warmup_ratio=checkpoint.get('warmup_ratio', 0.1),
+            label_smoothing=checkpoint.get('label_smoothing', 0.1),
+            gradient_accumulation_steps=checkpoint.get('gradient_accumulation_steps', 2),
         )
 
         # 恢复tokenizer
