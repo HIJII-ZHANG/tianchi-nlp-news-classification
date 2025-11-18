@@ -8,5 +8,8 @@ wheels/
 
 # Virtual environments
 .venv
-
+*.csv
+*.pt
+*.log
+*.joblib
 data/
