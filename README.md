@@ -9,8 +9,10 @@ uv 包管理器安装：[https://uv.doczh.com/getting-started/installation/](htt
 训练：
 
 ```bash
-# 使用默认数据路径 data/train_set.csv
+# 使用默认数据路径 data/train_set.csv，训练sklearn所配置的模型
 uv run main.py train --train-csv data/train_set.csv --model-out models/model.joblib
+# 训练torch下的transformer模型
+uv run main.py train --model-spec transformer --nrows 1000 --model-out models/model_transformer_1k.pt --epochs 3 --batch-size 16
 ```
 
 推理（单条文本）：
