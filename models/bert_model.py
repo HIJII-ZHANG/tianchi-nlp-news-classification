@@ -17,6 +17,23 @@ from .base import BaseModel
 
 logger = logging.getLogger(__name__)
 
+# 新的损失函数，适应类别不平衡
+class FocalLoss(nn.Module):
+    """Focal Loss用于处理类别不平衡"""
+    def __init__(self, gamma: float = 2.0, label_smoothing: float = 0.0):
+        super().__init__()
+        self.gamma = gamma
+        self.label_smoothing = label_smoothing
+
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        # 计算交叉熵
+        ce_loss = F.cross_entropy(inputs, targets, reduction='none', label_smoothing=self.label_smoothing)
+        # 计算概率
+        pt = torch.exp(-ce_loss)
+        # Focal loss
+        focal_loss = ((1 - pt) ** self.gamma * ce_loss).mean()
+        return focal_loss
+
 
 class SimpleTokenizer:
     """简单的数字token分词器，用于处理空格分隔的匿名化数字序列"""
@@ -259,19 +276,21 @@ class BERTTextClassifier(BaseModel):
 
     def __init__(
         self,
-        vocab_size: int = 6000,
+        vocab_size: int = 7000, # 6000->7000
         d_model: int = 768,
-        num_layers: int = 8,
+        num_layers: int = 10, # 8->10
         num_heads: int = 12,
-        d_ff: int = 3072,
+        d_ff: int = 3072, # 2048->3072
         max_length: int = 1024,
         batch_size: int = 16,
-        learning_rate: float = 2e-5,
-        epochs: int = 15,
-        dropout: float = 0.15,
-        warmup_ratio: float = 0.1,
+        learning_rate: float = 1.5e-5,
+        epochs: int = 20,
+        dropout: float = 0.2,
+        warmup_ratio: float = 0.15,
         label_smoothing: float = 0.1,
         gradient_accumulation_steps: int = 2,
+        use_focal_loss: bool = True,
+        focal_gamma: float = 2.0,
         device: Optional[str] = None,
     ):
         """
@@ -303,6 +322,8 @@ class BERTTextClassifier(BaseModel):
         self.warmup_ratio = warmup_ratio
         self.label_smoothing = label_smoothing
         self.gradient_accumulation_steps = gradient_accumulation_steps
+        self.use_focal_loss = use_focal_loss
+        self.focal_gamma = focal_gamma
 
         # 设置设备
         if device is None:
@@ -384,8 +405,12 @@ class BERTTextClassifier(BaseModel):
 
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, get_lr_multiplier)
 
-        # 损失函数：标签平滑
-        criterion = nn.CrossEntropyLoss(label_smoothing=self.label_smoothing)
+        # 损失函数：Focal Loss或标签平滑交叉熵
+        if self.use_focal_loss:
+            criterion = FocalLoss(gamma=self.focal_gamma, label_smoothing=self.label_smoothing)
+            logger.info(f"Using Focal Loss with gamma={self.focal_gamma}")
+        else:
+            criterion = nn.CrossEntropyLoss(label_smoothing=self.label_smoothing)
 
         logger.info(f"Training config: warmup_steps={warmup_steps}, total_steps={total_steps}, gradient_accumulation={self.gradient_accumulation_steps}")
 
@@ -496,10 +521,20 @@ class BERTTextClassifier(BaseModel):
         predictions = self.label_encoder.inverse_transform(predictions)
         return predictions.tolist()
 
-    def predict_proba(self, X: List[str]) -> List[List[float]]:
-        """预测每个类别的概率"""
+    def predict_proba(self, X: List[str], use_tta: bool = False, tta_rounds: int = 3) -> List[List[float]]:
+        """预测每个类别的概率
+
+        Args:
+            X: 文本列表
+            use_tta: 是否使用Test-Time Augmentation
+            tta_rounds: TTA轮数（如果use_tta=True）
+        """
         if self.model is None:
             raise RuntimeError("Model not trained. Call fit() first.")
+
+        if use_tta:
+            logger.info(f"Predicting probabilities for {len(X)} samples with TTA (rounds={tta_rounds})...")
+            return self._predict_proba_with_tta(X, tta_rounds)
 
         logger.info(f"Predicting probabilities for {len(X)} samples...")
         self.model.eval()
@@ -520,6 +555,39 @@ class BERTTextClassifier(BaseModel):
                 probabilities.extend(probs.cpu().numpy())
 
         return probabilities
+
+    def _predict_proba_with_tta(self, X: List[str], tta_rounds: int = 3) -> List[List[float]]:
+        """使用Test-Time Augmentation进行预测
+
+        通过多次dropout推理并平均，提升预测稳定性
+        """
+        self.model.train()  # 启用dropout
+
+        # 编码文本
+        token_ids = self.tokenizer.encode(X)
+        dataset = TextDataset(token_ids)
+        dataloader = DataLoader(dataset, batch_size=self.batch_size)
+
+        # 多轮预测
+        all_probs = []
+        for round_idx in range(tta_rounds):
+            round_probs = []
+            with torch.no_grad():
+                for batch in dataloader:
+                    input_ids = batch['input_ids'].to(self.device)
+                    attention_mask = batch['attention_mask'].to(self.device)
+
+                    logits = self.model(input_ids, attention_mask)
+                    probs = F.softmax(logits, dim=1)
+                    round_probs.extend(probs.cpu().numpy())
+            all_probs.append(round_probs)
+
+        # 平均所有轮次的预测
+        import numpy as np
+        avg_probs = np.mean(all_probs, axis=0)
+
+        self.model.eval()  # 恢复eval模式
+        return avg_probs.tolist()
 
     def save(self, path: str) -> None:
         """保存模型"""
@@ -544,6 +612,8 @@ class BERTTextClassifier(BaseModel):
             'warmup_ratio': self.warmup_ratio,
             'label_smoothing': self.label_smoothing,
             'gradient_accumulation_steps': self.gradient_accumulation_steps,
+            'use_focal_loss': self.use_focal_loss,
+            'focal_gamma': self.focal_gamma,
         }
 
         torch.save(checkpoint, path)
@@ -552,20 +622,22 @@ class BERTTextClassifier(BaseModel):
     @classmethod
     def load(cls, path: str) -> "BERTTextClassifier":
         """加载模型"""
-        checkpoint = torch.load(path, map_location='cpu')
+        checkpoint = torch.load(path, map_location='cpu', weights_only=False)
 
         # 创建模型实例
         instance = cls(
-            vocab_size=checkpoint.get('vocab_size', 5000),
-            d_model=checkpoint.get('d_model', 512),
-            num_layers=checkpoint.get('num_layers', 6),
-            num_heads=checkpoint.get('num_heads', 8),
-            d_ff=checkpoint.get('d_ff', 2048),
-            max_length=checkpoint.get('max_length', 512),
-            dropout=checkpoint.get('dropout', 0.1),
+            vocab_size=checkpoint.get('vocab_size', 7000),
+            d_model=checkpoint.get('d_model', 768),
+            num_layers=checkpoint.get('num_layers', 10),
+            num_heads=checkpoint.get('num_heads', 12),
+            d_ff=checkpoint.get('d_ff', 3072),
+            max_length=checkpoint.get('max_length', 1024),
+            dropout=checkpoint.get('dropout', 0.15),
             warmup_ratio=checkpoint.get('warmup_ratio', 0.1),
             label_smoothing=checkpoint.get('label_smoothing', 0.1),
             gradient_accumulation_steps=checkpoint.get('gradient_accumulation_steps', 2),
+            use_focal_loss=checkpoint.get('use_focal_loss', True),
+            focal_gamma=checkpoint.get('focal_gamma', 2.0)
         )
 
         # 恢复tokenizer
