@@ -291,6 +291,7 @@ class BERTTextClassifier(BaseModel):
         gradient_accumulation_steps: int = 2,
         use_focal_loss: bool = True,
         focal_gamma: float = 2.0,
+        use_multi_gpu: bool = True,
         device: Optional[str] = None,
     ):
         """
@@ -324,19 +325,30 @@ class BERTTextClassifier(BaseModel):
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self.use_focal_loss = use_focal_loss
         self.focal_gamma = focal_gamma
+        self.use_multi_gpu = use_multi_gpu
 
-        # 设置设备
+        # 设置设备和多GPU
         if device is None:
             self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         else:
             self.device = torch.device(device)
+        
+        # 检测可用GPU数量
+        self.num_gpus = torch.cuda.device_count()
+        if self.num_gpus > 1 and self.use_multi_gpu:
+            logger.info(f"Detected {self.num_gpus} GPUs, will use DataParallel for training")
+            self.multi_gpu_enabled = True
+        else:
+            self.multi_gpu_enabled = False
+            if self.num_gpus <= 1 and self.use_multi_gpu:
+                logger.warning(f"use_multi_gpu=True but only {self.num_gpus} GPU available")
 
         self.tokenizer = SimpleTokenizer(vocab_size, max_length)
         self.model = None
         self.label_encoder = LabelEncoder()
         self.num_labels = None
 
-        logger.info(f"Initialized BERT classifier with device: {self.device}")
+        logger.info(f"Initialized BERT classifier with device: {self.device}, Multi-GPU: {self.multi_gpu_enabled}")
 
     def fit(self, X: List[str], y: List[Any], val_size: float = 0.1, **kwargs) -> None:
         """训练模型"""
@@ -370,7 +382,7 @@ class BERTTextClassifier(BaseModel):
         val_loader = DataLoader(val_dataset, batch_size=self.batch_size)
 
         # 初始化模型
-        self.model = BERTClassifier(
+        model = BERTClassifier(
             vocab_size=len(self.tokenizer.token_to_idx),
             num_labels=self.num_labels,
             d_model=self.d_model,
@@ -380,6 +392,16 @@ class BERTTextClassifier(BaseModel):
             max_seq_length=self.max_length,
             dropout=self.dropout
         ).to(self.device)
+        
+        # 多GPU包装
+        if self.multi_gpu_enabled:
+            logger.info(f"Wrapping model with DataParallel for {self.num_gpus} GPUs")
+            self.model = nn.DataParallel(model, device_ids=list(range(self.num_gpus)))
+            # 调整batch size以充分利用多GPU
+            effective_batch_size = self.batch_size * self.num_gpus
+            logger.info(f"Effective batch size with {self.num_gpus} GPUs: {effective_batch_size}")
+        else:
+            self.model = model
 
         logger.info(f"Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
 
@@ -597,8 +619,14 @@ class BERTTextClassifier(BaseModel):
         save_path = Path(path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # 如果是多GPU模型，获取原始模型
+        if isinstance(self.model, nn.DataParallel):
+            model_state_dict = self.model.module.state_dict()
+        else:
+            model_state_dict = self.model.state_dict()
+
         checkpoint = {
-            'model_state_dict': self.model.state_dict(),
+            'model_state_dict': model_state_dict,
             'tokenizer_vocab': self.tokenizer.token_to_idx,
             'label_encoder_classes': self.label_encoder.classes_,
             'num_labels': self.num_labels,
@@ -637,7 +665,8 @@ class BERTTextClassifier(BaseModel):
             label_smoothing=checkpoint.get('label_smoothing', 0.1),
             gradient_accumulation_steps=checkpoint.get('gradient_accumulation_steps', 2),
             use_focal_loss=checkpoint.get('use_focal_loss', True),
-            focal_gamma=checkpoint.get('focal_gamma', 2.0)
+            focal_gamma=checkpoint.get('focal_gamma', 2.0),
+            use_multi_gpu=False  # 加载时不启用多GPU
         )
 
         # 恢复tokenizer
@@ -660,7 +689,13 @@ class BERTTextClassifier(BaseModel):
             dropout=instance.dropout
         ).to(instance.device)
 
-        instance.model.load_state_dict(checkpoint['model_state_dict'])
+        # 加载state_dict，处理可能的DataParallel包装
+        state_dict = checkpoint['model_state_dict']
+        # 如果state_dict中有"module."前缀，移除它
+        if list(state_dict.keys())[0].startswith('module.'):
+            state_dict = {k[7:]: v for k, v in state_dict.items()}
+        
+        instance.model.load_state_dict(state_dict)
         instance.model.eval()
 
         logger.info(f"Model loaded from {path}")
