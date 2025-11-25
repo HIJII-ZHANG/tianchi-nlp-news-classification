@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 
-def train(train_csv: str, model_out: str, test_size: float = 0.1, random_state: int = 42, max_features: int = 50000, nrows: Optional[int] = None, model_spec: str = "sklearn", epochs: int = 10, batch_size: int = 16, learning_rate: float = 1e-4):
+def train(train_csv: str, model_out: str, test_size: float = 0.1, random_state: int = 42, max_features: int = 50000, nrows: Optional[int] = None, model_spec: str = "sklearn", epochs: int = 10, batch_size: int = 16, learning_rate: float = 1e-4, pretrained: Optional[str] = None, dataloader_num_workers: int = 0):
     """
     参数说明:
     - train_csv: 训练数据的CSV文件路径
@@ -52,7 +52,20 @@ def train(train_csv: str, model_out: str, test_size: float = 0.1, random_state: 
 
     print(f"Training model ({model_spec})...")
     # pass kwargs - transformer models need epochs, batch_size, learning_rate; sklearn ignores them
-    model.fit(X_train, y_train, max_features=max_features, epochs=epochs, batch_size=batch_size, learning_rate=learning_rate, val_split=0.0)
+    # forward pretrained (local path or HF id) to model.fit; if pretrained is provided and
+    # points to a local directory containing weights, the model loader will use it and
+    # avoid downloading from the Hub.
+    model.fit(
+        X_train,
+        y_train,
+        max_features=max_features,
+        epochs=epochs,
+        batch_size=batch_size,
+        learning_rate=learning_rate,
+        val_split=0.0,
+        pretrained=pretrained,
+        dataloader_num_workers=dataloader_num_workers,
+    )
 
     print("Evaluating on validation set...")
     preds = model.predict(X_val)
@@ -74,8 +87,22 @@ def main():
     parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs (for transformer models)")
     parser.add_argument("--batch-size", type=int, default=16, help="Batch size (for transformer models)")
     parser.add_argument("--learning-rate", type=float, default=1e-4, help="Learning rate (for transformer models)")
+    parser.add_argument("--dataloader-num-workers", type=int, default=0, help="Number of PyTorch DataLoader workers (transformer models)")
+    parser.add_argument("--pretrained", type=str, default=None, help="Path to local pretrained model directory (prefered) or HF model id")
     args = parser.parse_args()
-    train(args.train_csv, args.model_out, test_size=args.test_size, max_features=args.max_features, nrows=args.nrows, model_spec=args.model_spec, epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate)
+    train(
+        args.train_csv,
+        args.model_out,
+        test_size=args.test_size,
+        max_features=args.max_features,
+        nrows=args.nrows,
+        model_spec=args.model_spec,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        learning_rate=args.learning_rate,
+        pretrained=args.pretrained,
+        dataloader_num_workers=args.dataloader_num_workers,
+    )
 
 
 if __name__ == "__main__":

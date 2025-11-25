@@ -27,7 +27,18 @@ from transformers import (
     Trainer,
     default_data_collator,
 )
+from inspect import signature
 from .base import BaseModel
+from huggingface_hub import snapshot_download
+import os
+from pathlib import Path
+from safetensors import safe_open as _safe_open  # optional, used to validate safetensors files
+import math
+import os
+
+# Avoid tokenizer parallelism causing deadlocks in some environments
+os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
+from data_utils import name_to_id
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -138,95 +149,39 @@ def compute_metrics(pred):
     return {"accuracy": acc}
 
 
-def train(
-    data_path: str,
-    output_dir: str,
-    pretrained: str = 'bert-base-chinese',
-    top_k_tokens: int = 6000,
-    nrows: int = None,
-    per_device_batch_size: int = 8,
-    num_train_epochs: int = 3,
-    max_length: int = 512,
-    fp16: bool = True,
-):
-    texts, labels = read_csv(data_path, nrows=nrows)
-    num_labels = len(set(labels))
-    logger.info(f"Loaded {len(texts)} samples, {num_labels} labels")
+def build_training_args(ta_kwargs: dict):
+    """Build TrainingArguments from ta_kwargs with compatibility fallbacks.
 
-    # choose top-K tokens from dataset and add to tokenizer
-    tokenizer = BertTokenizer.from_pretrained(pretrained)
-    added_tokens = get_top_k_tokens(texts, top_k_tokens)
-    logger.info(f"Adding {len(added_tokens)} tokens to tokenizer (top {top_k_tokens})")
-    tokenizer.add_tokens(added_tokens)
+    - Filters unsupported kwargs based on TrainingArguments.__init__ signature.
+    - If ValueError about mismatched eval/save strategies occurs, disables load_best_model_at_end.
+    - If TypeError about unexpected keywords occurs, removes common newer keys and retries.
+    """
+    try:
+        sig = signature(TrainingArguments.__init__)
+        valid_keys = set(sig.parameters.keys()) - {"self", "args", "kwargs"}
+        filtered = {k: v for k, v in ta_kwargs.items() if k in valid_keys}
+    except Exception:
+        filtered = ta_kwargs.copy()
 
-    model = BertForSequenceClassification.from_pretrained(pretrained, num_labels=num_labels)
-    model.resize_token_embeddings(len(tokenizer))
+    def _try_build(kwargs):
+        try:
+            return TrainingArguments(**kwargs)
+        except ValueError as e:
+            msg = str(e)
+            if 'requires the save and eval strategy to match' in msg or 'requires the save and eval' in msg:
+                if 'load_best_model_at_end' in kwargs and kwargs.get('load_best_model_at_end'):
+                    new_kwargs = kwargs.copy()
+                    new_kwargs['load_best_model_at_end'] = False
+                    return TrainingArguments(**new_kwargs)
+            raise
+        except TypeError:
+            # Unexpected keyword(s); remove common newer keys and retry
+            for k in ('evaluation_strategy', 'save_strategy', 'load_best_model_at_end', 'metric_for_best_model'):
+                if k in kwargs:
+                    kwargs.pop(k, None)
+            return TrainingArguments(**kwargs)
 
-    # split
-    X_train, X_val, y_train, y_val = train_test_split(
-        texts, labels, test_size=0.1, random_state=42, stratify=labels
-    )
-
-    train_dataset = prepare_datasets(tokenizer, X_train, y_train, max_length=max_length)
-    val_dataset = prepare_datasets(tokenizer, X_val, y_val, max_length=max_length)
-
-    training_args = TrainingArguments(
-        output_dir=output_dir,
-        overwrite_output_dir=True,
-        evaluation_strategy='epoch',
-        save_strategy='epoch',
-        per_device_train_batch_size=per_device_batch_size,
-        per_device_eval_batch_size=per_device_batch_size,
-        num_train_epochs=num_train_epochs,
-        weight_decay=0.01,
-        fp16=fp16,
-        logging_steps=200,
-        save_total_limit=2,
-        load_best_model_at_end=True,
-        metric_for_best_model='accuracy',
-    )
-
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=train_dataset,
-        eval_dataset=val_dataset,
-        tokenizer=tokenizer,
-        data_collator=default_data_collator,
-        compute_metrics=compute_metrics,
-    )
-
-    trainer.train()
-
-    # save model and tokenizer
-    trainer.save_model(output_dir)
-    tokenizer.save_pretrained(output_dir)
-    logger.info(f"Training completed. Model saved to {output_dir}")
-
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--data_path', default='data/train_set.csv')
-    parser.add_argument('--output_dir', default='models/bert_finetuned')
-    parser.add_argument('--top_k_tokens', type=int, default=6000)
-    parser.add_argument('--nrows', type=int, default=None)
-    parser.add_argument('--batch_size', type=int, default=8)
-    parser.add_argument('--epochs', type=int, default=3)
-    parser.add_argument('--max_length', type=int, default=512)
-    parser.add_argument('--fp16', action='store_true')
-    args = parser.parse_args()
-
-    train(
-        data_path=args.data_path,
-        output_dir=args.output_dir,
-        top_k_tokens=args.top_k_tokens,
-        nrows=args.nrows,
-        per_device_batch_size=args.batch_size,
-        num_train_epochs=args.epochs,
-        max_length=args.max_length,
-        fp16=args.fp16,
-    )
-
+    return _try_build(filtered)
 
 class BertHFClassifier(BaseModel):
     """Adapter class wrapping HF Trainer to match BaseModel interface."""
@@ -249,6 +204,7 @@ class BertHFClassifier(BaseModel):
         max_length = kwargs.get('max_length', 512)
         fp16 = kwargs.get('fp16', True)
         stride = kwargs.get('stride', None)
+        dataloader_num_workers = kwargs.get('dataloader_num_workers', 0)
 
         # save for prediction time
         self.max_length = max_length
@@ -258,15 +214,36 @@ class BertHFClassifier(BaseModel):
 
         texts = X
         labels = y
-        self.num_labels = len(set(labels))
+        # Normalize labels to contiguous integer ids required by HF Trainer / torch tensors
+        processed_labels = []
+        orig_to_id = {}
+        id_to_orig = {}
+        next_idx = 0
+        for lab in labels:
+            key = str(lab)
+            if key in orig_to_id:
+                lid = orig_to_id[key]
+            else:
+                lid = next_idx
+                orig_to_id[key] = lid
+                id_to_orig[lid] = key
+                next_idx += 1
+            processed_labels.append(lid)
+
+        labels = processed_labels
+        self.num_labels = next_idx
+        # Save mapping to decode predictions back to original label strings
+        self.id_to_label = id_to_orig
+        self.label_to_id = orig_to_id
+        logger.info(f"Label mapping (original -> id): {self.label_to_id}")
 
         # tokenizer and model
-        self.tokenizer = BertTokenizer.from_pretrained(pretrained)
+        self.tokenizer = BertTokenizer.from_pretrained(ensure_pretrained_local(pretrained))
         added_tokens = get_top_k_tokens(texts, top_k_tokens)
         if added_tokens:
             self.tokenizer.add_tokens(added_tokens)
 
-        self.model = BertForSequenceClassification.from_pretrained(pretrained, num_labels=self.num_labels)
+        self.model = BertForSequenceClassification.from_pretrained(ensure_pretrained_local(pretrained), num_labels=self.num_labels)
         self.model.resize_token_embeddings(len(self.tokenizer))
 
         # split
@@ -275,11 +252,12 @@ class BertHFClassifier(BaseModel):
         train_dataset = prepare_datasets(self.tokenizer, X_train, y_train, max_length=max_length, stride=stride)
         val_dataset = prepare_datasets(self.tokenizer, X_val, y_val, max_length=max_length, stride=stride)
 
-        training_args = TrainingArguments(
+        ta_kwargs = dict(
             output_dir=output_dir,
             overwrite_output_dir=True,
             evaluation_strategy='epoch',
             save_strategy='epoch',
+            dataloader_num_workers=dataloader_num_workers,
             per_device_train_batch_size=per_device_batch_size,
             per_device_eval_batch_size=per_device_batch_size,
             num_train_epochs=num_train_epochs,
@@ -290,6 +268,14 @@ class BertHFClassifier(BaseModel):
             load_best_model_at_end=True,
             metric_for_best_model='accuracy',
         )
+        try:
+            sig = signature(TrainingArguments.__init__)
+            valid_keys = set(sig.parameters.keys()) - {"self", "args", "kwargs"}
+            filtered = {k: v for k, v in ta_kwargs.items() if k in valid_keys}
+        except Exception:
+            filtered = ta_kwargs.copy()
+
+        training_args = build_training_args(ta_kwargs)
 
         self.trainer = Trainer(
             model=self.model,
@@ -353,6 +339,9 @@ class BertHFClassifier(BaseModel):
                     pred = int(torch.argmax(logits, dim=1).cpu().numpy()[0])
                 preds.append(pred)
 
+        # If we have an id->original label mapping, decode to original labels (strings)
+        if getattr(self, 'id_to_label', None):
+            return [self.id_to_label.get(p, p) for p in preds]
         return preds
 
     def predict_proba(self, X: List[str]):
@@ -412,8 +401,65 @@ class BertHFClassifier(BaseModel):
     @classmethod
     def load(cls, path: str) -> 'BertHFClassifier':
         inst = cls()
-        inst.tokenizer = BertTokenizer.from_pretrained(path)
+        # if the provided path is not a local folder, ensure it's downloaded locally
+        local_path = ensure_pretrained_local(path)
+        inst.tokenizer = BertTokenizer.from_pretrained(local_path)
         # load model
-        inst.model = BertForSequenceClassification.from_pretrained(path)
+        inst.model = BertForSequenceClassification.from_pretrained(local_path)
         inst.trainer = None
         return inst
+
+
+def ensure_pretrained_local(pretrained: str, cache_root: str = 'models/pretrained') -> str:
+    """
+    Ensure that `pretrained` refers to a local directory containing a HF model.
+    If `pretrained` is already a local path with model files, return it unchanged.
+    Otherwise, download the model snapshot from the Hub into `cache_root/<repo_id>` and return that path.
+    """
+    # If it already looks like a local directory, and contains expected files, return it
+    p = Path(pretrained)
+    expected_files = ['pytorch_model.bin', 'tf_model.h5', 'flax_model.msgpack', 'config.json']
+    if p.is_dir():
+        # If directory contains at least one expected weight file, return it
+        for ef in expected_files:
+            f = p / ef
+            if f.exists():
+                # If it's a safetensors file, try to open to validate header
+                if ef.endswith('.safetensors') or str(f).endswith('.safetensors'):
+                    try:
+                        with _safe_open(str(f), framework="pt") as sf:
+                            # access keys to ensure file is readable
+                            _ = sf.keys()
+                    except Exception as e:
+                        raise RuntimeError(f"safetensors file appears corrupted: {f}. Error: {e}")
+                return str(p)
+        # If dir exists but no expected files, still return it (allow custom layouts)
+        return str(p)
+
+    # Not a local dir; attempt to download from HF Hub into cache_root
+    repo_id = pretrained
+    # sanitize repo_id into a directory name
+    safe_name = repo_id.replace('/', '__')
+    target_dir = Path(cache_root) / safe_name
+    if target_dir.exists():
+        # if target already has model files, validate and return it
+        for ef in expected_files:
+            f = target_dir / ef
+            if f.exists():
+                if ef.endswith('.safetensors') or str(f).endswith('.safetensors'):
+                    try:
+                        with _safe_open(str(f), framework="pt") as sf:
+                            _ = sf.keys()
+                    except Exception as e:
+                        raise RuntimeError(f"Existing safetensors file appears corrupted: {f}. Error: {e}")
+                return str(target_dir)
+
+    # create parent
+    target_dir.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        # snapshot_download supports local_dir in newer versions; use it to download into our folder
+        snapshot_download(repo_id=repo_id, local_dir=str(target_dir), local_dir_use_symlinks=False)
+        return str(target_dir)
+    except Exception:
+        # fallback: let transformers/hf handle remote identifier (will raise later)
+        return pretrained
