@@ -8,6 +8,7 @@ from data_utils import load_data, save_predictions
 from models.sklearn_model import SklearnModel
 from models.transformer_model import TransformerModel
 from models.bert_model import BERTTextClassifier
+from models.bert_finetune import BertHFClassifier
 from models.base import BaseModel
 
 
@@ -18,12 +19,21 @@ def load_model(model_path: str, model_type: Optional[str] = None) -> BaseModel:
     # 如果指定了模型类型，直接使用
     if model_type == "bert":
         return BERTTextClassifier.load(model_path)
+    if model_type in ("bert_finetune", "bert-hf", "berthf"):
+        return BertHFClassifier.load(model_path)
     elif model_type == "transformer":
         return TransformerModel.load(model_path)
     elif model_type == "sklearn":
         return SklearnModel.load(model_path)
 
     # 否则根据文件扩展名判断模型类型
+    if path.is_dir():
+        # directory -> assume HF saved model/tokenizer
+        try:
+            return BertHFClassifier.load(model_path)
+        except Exception:
+            pass
+
     if path.suffix == ".pt":
         # PyTorch模型 - 先尝试BERT，再尝试Transformer
         try:
@@ -51,7 +61,11 @@ def load_model(model_path: str, model_type: Optional[str] = None) -> BaseModel:
                 try:
                     return SklearnModel.load(model_path)
                 except Exception:
-                    raise ValueError(f"Unable to load model from {model_path}")
+                    # last resort: try HF directory loader
+                    try:
+                        return BertHFClassifier.load(model_path)
+                    except Exception:
+                        raise ValueError(f"Unable to load model from {model_path}")
 
 
 def predict_text(model_path: str, text: str, model_type: Optional[str] = None):
@@ -81,7 +95,7 @@ def predict_csv(model_path: str, input_csv: str, output_csv: str, model_type: Op
 def main():
     parser = argparse.ArgumentParser(description="Inference for news classifier")
     parser.add_argument("--model", default="models/model.joblib")
-    parser.add_argument("--model-type", choices=["sklearn", "transformer", "bert"], help="Model type (sklearn, transformer, or bert)")
+    parser.add_argument("--model-type", choices=["sklearn", "transformer", "bert", "bert_finetune"], help="Model type (sklearn, transformer, bert, or bert_finetune)")
     parser.add_argument("--text", help="Single text to classify")
     parser.add_argument("--input-csv", help="CSV file to classify")
     parser.add_argument("--output-csv", default="predictions.csv")
