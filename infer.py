@@ -10,6 +10,7 @@ from models.transformer_model import TransformerModel
 from models.bert_model import BERTTextClassifier
 from models.bert_finetune import BertHFClassifier
 from models.textcnn_model import TextCNNModel
+from models.bert_ensemble import BertEnsembleClassifier
 from models.base import BaseModel
 
 
@@ -24,6 +25,8 @@ def load_model(model_path: str, model_type: Optional[str] = None) -> BaseModel:
         return BertHFClassifier.load(model_path)
     if model_type in ("textcnn", "textcnn_model"):
         return TextCNNModel.load(model_path)
+    if model_type in ("bert_ensemble", "bert-ensemble", "bertens"):
+        return BertEnsembleClassifier.load(model_path)
     elif model_type == "transformer":
         return TransformerModel.load(model_path)
     elif model_type == "sklearn":
@@ -39,7 +42,7 @@ def load_model(model_path: str, model_type: Optional[str] = None) -> BaseModel:
 
     if path.suffix == ".pt":
         # PyTorch模型 - 尝试TextCNN/BERT/Transformer
-        for loader in (BERTTextClassifier.load, TextCNNModel.load, TransformerModel.load):
+        for loader in (BERTTextClassifier.load, BertEnsembleClassifier.load, TextCNNModel.load, TransformerModel.load):
             try:
                 return loader(model_path)
             except Exception:
@@ -105,8 +108,8 @@ def main():
     parser.add_argument("--model", default="models/model.joblib")
     parser.add_argument(
         "--model-type",
-        choices=["sklearn", "transformer", "bert", "bert_finetune", "textcnn"],
-        help="Model type (sklearn, transformer, bert, bert_finetune, or textcnn)",
+        choices=["sklearn", "transformer", "bert", "bert_finetune", "textcnn", "bert_ensemble"],
+        help="Model type (sklearn, transformer, bert, bert_finetune, textcnn, or bert_ensemble)",
     )
     parser.add_argument("--text", help="Single text to classify")
     parser.add_argument("--input-csv", help="CSV file to classify")

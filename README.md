@@ -9,9 +9,9 @@
 
 ## 训练
 
-在 `models/` 下提供 4 种模型的训练，从而探寻适应于该任务的更优架构。
+在 `models/` 下提供 5 种模型的训练，从而探寻适应于该任务的更优架构。
 
-### sklearn、transformer、bert
+### textcnn、transformer、bert
 
 参数说明：
 

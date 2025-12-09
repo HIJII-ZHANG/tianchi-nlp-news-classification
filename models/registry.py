@@ -40,6 +40,9 @@ def load_model_class(spec: str):
     if spec in ("textcnn", "textcnn_model"):
         return import_from_string("models.textcnn_model.TextCNNModel")
 
+    if spec in ("bert_ensemble", "bert-ensemble", "bertens"):
+        return import_from_string("models.bert_ensemble.BertEnsembleClassifier")
+
     if spec in ("bert_finetune", "bert-hf", "berthf"):
         return import_from_string("models.bert_finetune.BertHFClassifier")
 
