@@ -1,5 +1,24 @@
 # tianchi-nlp-news-classification report
 
+## 训练textCNN模型
+
+### 方案
+
+### 最佳训练参数
+
+```bash
+python main.py train --model-spec textcnn --epochs 15 --batch-size 128 --learning-rate 1.5e-4 --dataloader-num-workers 4 --model-out models/textcnn.pt
+```
+
+### 训练过程
+
+![alt text](fig/cnn-train.png)
+
+![alt text](fig/cnn-traincomplete.png)
+
+### 结果
+
+得分92.98
 
 ## 训练bert模型
 
