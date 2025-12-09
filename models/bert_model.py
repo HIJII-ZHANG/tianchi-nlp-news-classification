@@ -281,7 +281,7 @@ class BERTTextClassifier(BaseModel):
         num_layers: int = 10, # 8->10
         num_heads: int = 12,
         d_ff: int = 3072, # 2048->3072
-        max_length: int = 1024,
+        max_length: int = 2560, # 1024->2560
         batch_size: int = 16,
         learning_rate: float = 1.5e-5,
         epochs: int = 20,
@@ -332,7 +332,7 @@ class BERTTextClassifier(BaseModel):
             self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         else:
             self.device = torch.device(device)
-        
+
         # 检测可用GPU数量
         self.num_gpus = torch.cuda.device_count()
         if self.num_gpus > 1 and self.use_multi_gpu:
@@ -392,7 +392,7 @@ class BERTTextClassifier(BaseModel):
             max_seq_length=self.max_length,
             dropout=self.dropout
         ).to(self.device)
-        
+
         # 多GPU包装
         if self.multi_gpu_enabled:
             logger.info(f"Wrapping model with DataParallel for {self.num_gpus} GPUs")
@@ -543,7 +543,7 @@ class BERTTextClassifier(BaseModel):
         predictions = self.label_encoder.inverse_transform(predictions)
         return predictions.tolist()
 
-    def predict_proba(self, X: List[str], use_tta: bool = False, tta_rounds: int = 3) -> List[List[float]]:
+    def predict_proba(self, X: List[str], use_tta: bool = True, tta_rounds: int = 5) -> List[List[float]]:
         """预测每个类别的概率
 
         Args:
@@ -694,7 +694,7 @@ class BERTTextClassifier(BaseModel):
         # 如果state_dict中有"module."前缀，移除它
         if list(state_dict.keys())[0].startswith('module.'):
             state_dict = {k[7:]: v for k, v in state_dict.items()}
-        
+
         instance.model.load_state_dict(state_dict)
         instance.model.eval()
 
