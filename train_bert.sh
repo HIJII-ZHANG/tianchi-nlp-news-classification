@@ -46,7 +46,7 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
         --model-out models/model_bert_u.pt \
         --epochs 15 \
         --batch-size 16 \
-        --learning-rate 2e-5
+        --learning-rate 1.2e-5
 
     echo ""
     echo "训练完成！"
