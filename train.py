@@ -28,9 +28,9 @@ def train(train_csv: str, model_out: str, test_size: float = 0.1, random_state: 
     - max_features: 特征最大数量（仅对sklearn模型有效）
     - nrows: 仅读取CSV的前n行（用于快速测试）
     - model_spec: 模型类规范（如'sklearn'或'transformer'或'models.my:MyModel'）
-    - epochs: 训练轮数（针对transformer模型）
-    - batch_size: 批量大小（针对transformer模型）
-    - learning_rate: 学习率（针对transformer模型）
+    - epochs: 训练轮数
+    - batch_size: 批量大小
+    - learning_rate: 学习率
     该函数从CSV文件加载数据，进行训练/验证集划分，训练指定模型，并在验证集上评估性能，最后保存训练好的模型。
     """
     texts, labels = load_data(train_csv, nrows=nrows)

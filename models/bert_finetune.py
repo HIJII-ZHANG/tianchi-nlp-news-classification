@@ -14,6 +14,7 @@ import logging
 import argparse
 from collections import Counter
 from typing import List, Tuple, Optional
+import json
 
 import numpy as np
 from sklearn.model_selection import train_test_split
@@ -42,6 +43,8 @@ from data_utils import name_to_id
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
+
+METADATA_FILENAME = 'hf_metadata.json'
 
 
 def read_csv(path: str, nrows: int = None) -> Tuple[List[str], List[int]]:
@@ -193,6 +196,7 @@ class BertHFClassifier(BaseModel):
         self.trainer = None
         self.num_labels = None
         self.output_dir = None
+        self._inference_device = None
 
     def fit(self, X: List[str], y: List[int], **kwargs) -> None:
         """Fit using HF Trainer. Accepts kwargs: output_dir, pretrained, top_k_tokens, epochs, batch_size, max_length, fp16, nrows, learning_rate"""
@@ -244,6 +248,10 @@ class BertHFClassifier(BaseModel):
             self.tokenizer.add_tokens(added_tokens)
 
         self.model = BertForSequenceClassification.from_pretrained(ensure_pretrained_local(pretrained), num_labels=self.num_labels)
+        # Persist label metadata inside HF config for easier reloads
+        self.model.config.id2label = {int(idx): str(label) for idx, label in self.id_to_label.items()}
+        self.model.config.label2id = {str(label): int(idx) for label, idx in self.label_to_id.items()}
+        self.model.config.num_labels = self.num_labels
         self.model.resize_token_embeddings(len(self.tokenizer))
 
         # split
@@ -290,17 +298,12 @@ class BertHFClassifier(BaseModel):
         self.trainer.train()
 
         # save
-        self.trainer.save_model(output_dir)
-        self.tokenizer.save_pretrained(output_dir)
+        self.save(output_dir)
 
     def predict(self, X: List[str]) -> List[int]:
-        if self.trainer is None:
-            raise RuntimeError("Model not trained. Call fit() first.")
-        device = getattr(self.trainer.args, 'device', None)
-        if device is None:
-            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.model.to(device)
-        self.model.eval()
+        if self.model is None or self.tokenizer is None:
+            raise RuntimeError("Model not trained or loaded. Call fit() or load() first.")
+        device = self._get_inference_device()
 
         preds = []
         for text in X:
@@ -341,17 +344,13 @@ class BertHFClassifier(BaseModel):
 
         # If we have an id->original label mapping, decode to original labels (strings)
         if getattr(self, 'id_to_label', None):
-            return [self.id_to_label.get(p, p) for p in preds]
+            return [self.id_to_label.get(int(p), str(p)) for p in preds]
         return preds
 
     def predict_proba(self, X: List[str]):
-        if self.trainer is None:
-            raise RuntimeError("Model not trained. Call fit() first.")
-        device = getattr(self.trainer.args, 'device', None)
-        if device is None:
-            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.model.to(device)
-        self.model.eval()
+        if self.model is None or self.tokenizer is None:
+            raise RuntimeError("Model not trained or loaded. Call fit() or load() first.")
+        device = self._get_inference_device()
 
         all_probs = []
         for text in X:
@@ -393,10 +392,14 @@ class BertHFClassifier(BaseModel):
 
     def save(self, path: str) -> None:
         # Save HF model and tokenizer
+        Path(path).mkdir(parents=True, exist_ok=True)
         if self.trainer is not None:
             self.trainer.save_model(path)
+        elif self.model is not None:
+            self.model.save_pretrained(path)
         if self.tokenizer is not None:
             self.tokenizer.save_pretrained(path)
+        self._save_metadata(path)
 
     @classmethod
     def load(cls, path: str) -> 'BertHFClassifier':
@@ -407,7 +410,54 @@ class BertHFClassifier(BaseModel):
         # load model
         inst.model = BertForSequenceClassification.from_pretrained(local_path)
         inst.trainer = None
+        inst.output_dir = local_path
+        inst.num_labels = inst.model.config.num_labels
+        inst._load_metadata(local_path)
         return inst
+
+    def _get_inference_device(self):
+        if self._inference_device is None:
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            self.model.to(device)
+            self.model.eval()
+            self._inference_device = device
+        return self._inference_device
+
+    def _save_metadata(self, path: str):
+        if self.label_to_id is None or self.id_to_label is None:
+            return
+        metadata = {
+            'label_to_id': {str(k): int(v) for k, v in self.label_to_id.items()},
+            'id_to_label': {str(k): str(v) for k, v in self.id_to_label.items()},
+            'max_length': getattr(self, 'max_length', 512),
+            'stride': getattr(self, 'stride', None),
+        }
+        meta_path = Path(path) / METADATA_FILENAME
+        with meta_path.open('w', encoding='utf-8') as f:
+            json.dump(metadata, f, ensure_ascii=False, indent=2)
+
+    def _load_metadata(self, path: str):
+        meta_path = Path(path) / METADATA_FILENAME
+        if meta_path.exists():
+            with meta_path.open('r', encoding='utf-8') as f:
+                metadata = json.load(f)
+            self.label_to_id = {str(k): int(v) for k, v in metadata.get('label_to_id', {}).items()}
+            self.id_to_label = {int(k): str(v) for k, v in metadata.get('id_to_label', {}).items()}
+            self.max_length = metadata.get('max_length', 512)
+            self.stride = metadata.get('stride')
+        else:
+            config = self.model.config
+            label2id = getattr(config, 'label2id', None)
+            id2label = getattr(config, 'id2label', None)
+            if label2id:
+                self.label_to_id = {str(k): int(v) for k, v in label2id.items()}
+            if id2label:
+                try:
+                    self.id_to_label = {int(k): str(v) for k, v in id2label.items()}
+                except Exception:
+                    self.id_to_label = {idx: str(label) for idx, label in enumerate(id2label)}
+            self.max_length = getattr(self, 'max_length', 512)
+            self.stride = getattr(self, 'stride', None)
 
 
 def ensure_pretrained_local(pretrained: str, cache_root: str = 'models/pretrained') -> str:

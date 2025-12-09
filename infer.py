@@ -9,6 +9,7 @@ from models.sklearn_model import SklearnModel
 from models.transformer_model import TransformerModel
 from models.bert_model import BERTTextClassifier
 from models.bert_finetune import BertHFClassifier
+from models.textcnn_model import TextCNNModel
 from models.base import BaseModel
 
 
@@ -21,6 +22,8 @@ def load_model(model_path: str, model_type: Optional[str] = None) -> BaseModel:
         return BERTTextClassifier.load(model_path)
     if model_type in ("bert_finetune", "bert-hf", "berthf"):
         return BertHFClassifier.load(model_path)
+    if model_type in ("textcnn", "textcnn_model"):
+        return TextCNNModel.load(model_path)
     elif model_type == "transformer":
         return TransformerModel.load(model_path)
     elif model_type == "sklearn":
@@ -35,11 +38,13 @@ def load_model(model_path: str, model_type: Optional[str] = None) -> BaseModel:
             pass
 
     if path.suffix == ".pt":
-        # PyTorch模型 - 先尝试BERT，再尝试Transformer
-        try:
-            return BERTTextClassifier.load(model_path)
-        except Exception:
-            return TransformerModel.load(model_path)
+        # PyTorch模型 - 尝试TextCNN/BERT/Transformer
+        for loader in (BERTTextClassifier.load, TextCNNModel.load, TransformerModel.load):
+            try:
+                return loader(model_path)
+            except Exception:
+                continue
+        raise ValueError(f"Unable to load PyTorch model from {model_path}")
     elif path.suffix == ".joblib":
         # Sklearn模型
         try:
@@ -56,16 +61,19 @@ def load_model(model_path: str, model_type: Optional[str] = None) -> BaseModel:
             return BERTTextClassifier.load(model_path)
         except Exception:
             try:
-                return TransformerModel.load(model_path)
+                return TextCNNModel.load(model_path)
             except Exception:
                 try:
-                    return SklearnModel.load(model_path)
+                    return TransformerModel.load(model_path)
                 except Exception:
-                    # last resort: try HF directory loader
                     try:
-                        return BertHFClassifier.load(model_path)
+                        return SklearnModel.load(model_path)
                     except Exception:
-                        raise ValueError(f"Unable to load model from {model_path}")
+                        # last resort: try HF directory loader
+                        try:
+                            return BertHFClassifier.load(model_path)
+                        except Exception:
+                            raise ValueError(f"Unable to load model from {model_path}")
 
 
 def predict_text(model_path: str, text: str, model_type: Optional[str] = None):
@@ -95,7 +103,11 @@ def predict_csv(model_path: str, input_csv: str, output_csv: str, model_type: Op
 def main():
     parser = argparse.ArgumentParser(description="Inference for news classifier")
     parser.add_argument("--model", default="models/model.joblib")
-    parser.add_argument("--model-type", choices=["sklearn", "transformer", "bert", "bert_finetune"], help="Model type (sklearn, transformer, bert, or bert_finetune)")
+    parser.add_argument(
+        "--model-type",
+        choices=["sklearn", "transformer", "bert", "bert_finetune", "textcnn"],
+        help="Model type (sklearn, transformer, bert, bert_finetune, or textcnn)",
+    )
     parser.add_argument("--text", help="Single text to classify")
     parser.add_argument("--input-csv", help="CSV file to classify")
     parser.add_argument("--output-csv", default="predictions.csv")
