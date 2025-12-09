@@ -51,9 +51,25 @@ transformer 模型广泛的运用在各种模型中，可以处理自然语言�
 
   * 最终输出分类结果(softmax后的argmax)
 
-下图为完整的transformer，此处的transformer去除了decoder。
+下图为完整的transformer，此处的transformer去除了decoder，因为在分类任务中如果保留decoder和自回归性质进行prefill的话反而容易引起不必要的麻烦，对于分类来说是额外复杂度和算力开销，而难以提升准确率。
+
+**（这个改造过的模型实际上已经和 BERT 模型很接近了，所以这里考虑使用更成熟的 BERT 模型为基准，不再对transformer进行改造）**
 
 ![alt text](fig/Transformer,_full_architecture.png)
+
+#### 训练参数
+
+此处的训练参数是测试性质的，没有发挥其全部威力。
+
+```python
+vocab_size: int = 8000
+d_model: int = 256,
+nhead: int = 8,
+num_layers: int = 4,
+dim_feedforward: int = 1024,
+dropout: float = 0.1,
+max_length: int = 512
+```
 
 #### 结果
 
