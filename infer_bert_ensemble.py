@@ -13,6 +13,12 @@ from pathlib import Path
 from typing import List
 import numpy as np
 import pandas as pd
+import sys
+
+# Ensure project root on sys.path when running the script directly
+PROJECT_ROOT = Path(__file__).resolve().parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from data_utils import load_data, save_predictions
 from models.bert_model import BERTTextClassifier
