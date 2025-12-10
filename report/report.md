@@ -1,38 +1,38 @@
 # tianchi-nlp-news-classification report
 
-## 问题介绍
+## 1 问题介绍
 
-## 数据处理
+## 2 数据处理
 
-## 模型 && 训练
+## 3 模型 && 训练
 
 本次实验中采取若干种模型结构进行训练，并在部分模型上进一步调优。在选择模型调优之前，需要先对比几种模型训练结果的基准表现，选取较为优秀、有进步空间的模型进行调整。
 
-### 训练textCNN模型
+### 3.1 训练textCNN模型
 
-#### textcnn方案
+#### 3.1.1 textcnn方案
 
-#### 训练参数
+#### 3.1.2 训练参数
 
 ```bash
 python main.py train --model-spec textcnn --epochs 15 --batch-size 128 --learning-rate 1.5e-4 --dataloader-num-workers 4 --model-out models/textcnn.pt
 ```
 
-#### 训练过程
+#### 3.1.3 训练过程
 
 ![alt text](fig/cnn-train.png)
 
 ![alt text](fig/cnn-traincomplete.png)
 
-#### 结果
+#### 3.1.4 结果
 
 得分92.98。
 
-### 训练transformer模型
+### 3.1 训练transformer模型
 
 transformer 模型广泛的运用在各种模型中，可以处理自然语言等顺序输入数据，适用于机器翻译、文本摘要等任务。
 
-#### transformer方案
+#### 3.2.1 transformer方案
 
 ##### 模型
 
@@ -57,7 +57,7 @@ transformer 模型广泛的运用在各种模型中，可以处理自然语言�
 
 ![alt text](fig/Transformer,_full_architecture.png)
 
-#### 训练参数
+#### 3.2.2 训练参数
 
 此处的训练参数是测试性质的，没有发挥其全部威力。
 
@@ -71,19 +71,19 @@ dropout: float = 0.1,
 max_length: int = 512
 ```
 
-#### 结果
+#### 3.2.3 结果
 
 得分91.58。
 
-### 训练bert模型
+### 3.3 训练 BERT 模型
 
-#### bert方案
+#### 3.3.1 BERT 方案
 
-选择bert模型的原因是其结构广泛的用于分类任务中，可以支撑大数据量、长输入的训练。
+选择 BERT 模型的原因是其结构广泛的用于分类任务中，可以支撑大数据量、长输入的训练。
 
 ##### 模型
 
-bert 模型具有以下架构：
+BERT 模型具有以下架构：
 
 * 嵌入层 **Embedding** 后加正弦/余弦 **PositionalEncoding**，形成 **[batch, seq_len, d_model]** 输入。
 * 堆叠 **num_layers** 个 Transformer 编码层：每层是多头自注意力 (**MultiHeadAttention**) + 前馈两层全连接 (**FeedForward**)，各自带残差和 **LayerNorm**。
@@ -144,7 +144,28 @@ for _ in range(5):
 final_pred = mean(predictions)
 ```
 
-#### 训练参数与调参
+##### 梯度累积
+
+```python
+# 实际batch=16，累积2步
+# 等效batch=32，减少内存占用
+for step in range(0, len(data), 16):
+    loss = model(batch) / 2
+    loss.backward()
+    if (step + 1) % 2 == 0:
+        optimizer.step()
+        optimizer.zero_grad()
+```
+
+##### 标签平滑
+
+原始: [0, 0, 1, 0, 0]
+
+平滑: [0.007, 0.007, 0.964, 0.007, 0.007]
+
+效果: 减少过拟合，提升泛化
+
+#### 3.3.2 训练参数与调参
 
 ```python
 vocab_size = 7000              # 更大词汇表覆盖 (6000->7000->7000)
@@ -173,22 +194,22 @@ gradient_accumulation = 2      # 有效batch=32 (0->2->2)
 * 第三次训练最主要增加了最大长度，做到覆盖所有样本，并小幅增加了训练epoch。
 * 第三次训练测试结果为0.95。
 
-#### 训练过程
+#### 3.3.3 训练过程
 
 ![alt text](fig/bert-train-start.png)
 ![alt text](fig/bert-train-finish.png)
 
-#### 训练结果
+#### 3.3.4 训练结果
 
 最优为95.05。
 
-### 从bertbase模型继续训练
+### 3.4 从 BERT-base 模型继续训练
 
-#### 方案
+#### 3.4.1 方案
 
-典型的bert模型需要经过预训练和下游微调两个阶段。也就是在 HF 中加载预训练的 bert，再进行微调分类头。本次实验中同样测试了这种方案。
+典型的 BERT 模型需要经过预训练和下游微调两个阶段。也就是在 HF 中加载预训练的 BERT，再进行微调分类头。本次实验中同样测试了这种方案。
 
-这种方法实际执行下效果非常差，准确率只有0.3。可以猜测原因如下：
+这种方法实际执行下效果非常差，若干轮训练后准确率只有0.3，远远不如直接训练的收敛速度。可以猜测原因如下：
 
 ##### BERT 对数字密文其实毫无先验，微调收益非常有限
 
@@ -198,3 +219,42 @@ gradient_accumulation = 2      # 有效batch=32 (0->2->2)
 从 BERT 视角看：预训练的 embedding 和 encoder 层里语义知识的几乎派不上用场；且在大量位置上还需要用随机初始化的新 token embedding；这本质上是在用一个带着一堆“无关先验”的网络去学习一堆随机编号序列上的分类问题。
 
 所以才会导致收敛更难，初始阶段模型对这些 token 的表示是纯随机的，需要大量数据 + 训练步数才能把 embedding 和高层适配好。同时内容加密其实也把 BERT 能利用的语义信息全抹掉了。
+
+### 3.5 从 BERT 模型集成学习
+
+#### 3.5.1 方案
+
+有两种方法得到集成学习的结果，方法一串行训练若干个模型，可以指定模型类型为集成学习的模型(bert_ensemble)：
+
+```bash
+python main.py train --model-spec bert_ensemble --epochs 20 --batch-size 8 --learning-rate 1.5e-5 --model-out models/bert_ens.pt
+```
+
+方法二是通过已有的模型文件进行集成推理，这种方法是并行的：
+
+```bash
+python infer_bert_ensemble.py \
+  --models models/bert_a.pt models/bert_b.pt models/bert_c.pt \
+  --input-csv data/test_a.csv \
+  --output-csv predictions.csv \
+  --use-tta --tta-rounds 5   # 可选
+```
+
+在实际操作时，受限于显存的大小与训练成本，最终没有选择串行训练的方法，而是直接通过 BERT 方案中训练的 3 个模型进行并行推理。
+
+#### 3.5.2 结果
+
+获得了最佳结果，准确率在 0.9557，相较于 3 个模型单独推理提升了 0.5%～1%，符合预期。（显示成绩结果13/0.96）
+
+#### 3.5.3 结果分析
+
+实际上，从 3 个模型单独的推理结果进行数据分析，发现两两之间不同结果数的占比能达到3%。
+
+这意味着虽然这 3 个模型都是通过 BERT 模型架构、相同的数据训练出来的，实际上在推理中的结果却并不会收敛到相同的值。由于这 3 份推理结果的错误率均只在 5% 左右，此处不同的推理结果极有可能造成并行推理带来提升，目前的提升是在预期之内的，也有可能通过不同的概率组合达到更高的提升。
+
+
+|                                         | 不同的行数 | 总行数 | 不同占比 |
+| --------------------------------------- | ---------: | -----: | -------: |
+| `predictions_1` vs `predictions_3` |       1620 |  50000 |    3.24% |
+| `predictions_1` vs `predictions-2`  |       1691 |  50000 |   3.382% |
+| `predictions_3` vs `predictions-2` |       1624 |  50000 |   3.248% |
