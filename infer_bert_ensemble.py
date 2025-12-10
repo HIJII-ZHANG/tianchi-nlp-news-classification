@@ -15,13 +15,15 @@ import numpy as np
 import pandas as pd
 import sys
 
-# Ensure project root on sys.path when running the script directly
+# Ensure project root (folder containing `models/`) is on sys.path.
 PROJECT_ROOT = Path(__file__).resolve().parent
+if not (PROJECT_ROOT / "models").exists():
+    PROJECT_ROOT = PROJECT_ROOT.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from data_utils import load_data, save_predictions
-from models.bert_model import BERTTextClassifier
+from data_utils import load_data, save_predictions  # noqa: E402
+from models.bert_model import BERTTextClassifier  # noqa: E402
 
 
 def load_models(paths: List[str]) -> List[BERTTextClassifier]:
