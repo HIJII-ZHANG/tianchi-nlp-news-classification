@@ -13,9 +13,21 @@
   * 自动加载 TSV（制表符分隔）格式的数据集，智能检测文本列、标签列；
   * 提供固定的类别名称与数字 ID 映射（如 “科技”→0、“股票”→1 等 14 个类别）；
   * 支持标签 ID 与名称的双向转换，以及预测结果的 CSV 保存。
-* **机器学习模型**:通过SimpleTokenizer（数字分词器）实现将空格分隔的数字序列文本转换成固定长度的 token ID。
+* **机器学习模型**:通过 SimpleTokenizer（数字分词器）实现将空格分隔的数字序列文本转换成固定长度的 token ID。
 
 操作后数据便转换为模型所需的Token了。
+
+### 2.1 SimpleTokenizer
+
+一个样本从“字符串”到“张量”大致经历以下步骤：
+
+1. **切分得到 token 序列**：SimpleTokenizer 直接按空格分隔，将 `"3750 648 900 ..."` 变成 `['3750','648','900',…]`。
+2. **映射到词表 ID**：查词表把每个 token 变成整数 ID；若未在词表中出现，就映射到 `<UNK>`。BERT 系列会在首尾追加 `[CLS]`、`[SEP]` 的 ID。
+3. **长度对齐**：依据模型设定的 `max_length` 进行截断或补 `<PAD>`。同时生成 `attention_mask`（1 表示真实 token，0 表示 PAD），以及 `token_type_ids`（单句任务固定为 0）。
+4. **打包成张量**：批量样本被堆叠成 `input_ids: [B, L]`、`attention_mask: [B, L]`、`token_type_ids: [B, L]`，并与标签张量一起交给模型/Trainer。
+5. **标签同步编码**：所有模型共享 `label_to_id` 映射，把原始标签（如 "科技" 或数字字符串）编码成连续整数，预测阶段再映射回去，保证不同模型输出一致。
+
+此后，匿名化的数字串被稳定地转成定长、带掩码的输入张量，能喂给 TextCNN/Transformer/BERT，也能无缝对接 HuggingFace 的 `BertForSequenceClassification`。
 
 ## 3 模型 && 训练
 
