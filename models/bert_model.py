@@ -281,7 +281,7 @@ class BERTTextClassifier(BaseModel):
         num_layers: int = 10, # 8->10
         num_heads: int = 12,
         d_ff: int = 3072, # 2048->3072
-        max_length: int = 2560, # 1024->2560
+        max_length: int = 1024,
         batch_size: int = 16,
         learning_rate: float = 1.5e-5,
         epochs: int = 20,
@@ -352,7 +352,31 @@ class BERTTextClassifier(BaseModel):
 
     def fit(self, X: List[str], y: List[Any], val_size: float = 0.1, **kwargs) -> None:
         """训练模型"""
-        logger.info(f"Starting BERT training with {len(X)} samples")
+        # Allow overriding core hyperparameters via kwargs (e.g., epochs from train.py)
+        override_map = {
+            'epochs': 'epochs',
+            'batch_size': 'batch_size',
+            'learning_rate': 'learning_rate',
+            'max_length': 'max_length',
+            'warmup_ratio': 'warmup_ratio',
+            'label_smoothing': 'label_smoothing',
+            'gradient_accumulation_steps': 'gradient_accumulation_steps',
+            'use_focal_loss': 'use_focal_loss',
+            'focal_gamma': 'focal_gamma',
+            'use_multi_gpu': 'use_multi_gpu',
+        }
+        for key, attr in override_map.items():
+            if key in kwargs and kwargs[key] is not None:
+                old_val = getattr(self, attr)
+                setattr(self, attr, kwargs[key])
+                if kwargs[key] != old_val:
+                    logger.info(f"Override {attr} via fit(): {old_val} -> {kwargs[key]}")
+
+        logger.info(f"Starting BERT training with {len(X)} samples (epochs={self.epochs})")
+
+        # Ensure tokenizer max_length stays in sync if overridden
+        if hasattr(self, 'tokenizer') and getattr(self.tokenizer, 'max_length', None) != self.max_length:
+            self.tokenizer.max_length = self.max_length
 
         # 构建词汇表
         self.tokenizer.build_vocab(X)
@@ -543,7 +567,7 @@ class BERTTextClassifier(BaseModel):
         predictions = self.label_encoder.inverse_transform(predictions)
         return predictions.tolist()
 
-    def predict_proba(self, X: List[str], use_tta: bool = True, tta_rounds: int = 5) -> List[List[float]]:
+    def predict_proba(self, X: List[str], use_tta: bool = False, tta_rounds: int = 3) -> List[List[float]]:
         """预测每个类别的概率
 
         Args:
