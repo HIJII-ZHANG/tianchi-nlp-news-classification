@@ -17,7 +17,42 @@
 
 操作后数据便转换为模型所需的Token了。
 
-### 2.1 SimpleTokenizer
+### 2.1 数据分析
+
+| 标签ID | 样本数 |   占比 |
+| ------ | -----: | -----: |
+| 0      |  38918 | 19.46% |
+| 1      |  36945 | 18.47% |
+| 2      |  31425 | 15.71% |
+| 3      |  22133 | 11.07% |
+| 4      |  15016 |  7.51% |
+| 5      |  12232 |  6.12% |
+| 6      |   9985 |  4.99% |
+| 7      |   8841 |  4.42% |
+| 8      |   7847 |  3.92% |
+| 9      |   5878 |  2.94% |
+| 10     |   4920 |  2.46% |
+| 11     |   3131 |  1.57% |
+| 12     |   1821 |  0.91% |
+| 13     |    908 |  0.45% |
+
+| 指标    | Token长度 |
+| ------- | --------: |
+| 最小值  |         2 |
+| 均值    |       907 |
+| 中位数  |       676 |
+| 75 分位 |      1131 |
+| 90 分位 |      1796 |
+| 95 分位 |      2457 |
+| 99 分位 |      4228 |
+| 最大值  |     57921 |
+
+1. **词表与分词**：文本是匿名数字，可能需要用单独设计分词器统计高频 token 并固定 ID，才能让 TextCNN、BERT 与微调流程共享同一输入空间。
+2. **长序列策略**：95% 样本超过 2400 token，1% 甚至超 4000，因此模型可能需要采用 2560 的 `max_length` 并辅以滑窗（stride）或 head-tail 拼接避免信息丢失。
+3. **类别不平衡**：标签 0/1/2 合计近 53%，而 12/13 不足 1%。训练时可能需要使用 FocalLoss、类别权重、TTA+集成来维持小类召回率，并在 TextCNN/Transformer 阶段选取合适的损失函数。
+4. **训练 / 验证划分策略**：由于比赛只提供单一训练集，我们在 `train.py` 中统一做 9:1 的分层拆分，保证每个标签在验证集中保持原始占比。当然还有一种想法是每一个类别都抽取相同样本数的数据做拆分，两种方式都可以尝试。
+
+### 2.2 SimpleTokenizer
 
 一个样本从“字符串”到“张量”大致经历以下步骤：
 
@@ -41,9 +76,9 @@
 
 * **SimpleTokenizer（数字分词器）**：将空格分隔的数字序列文本，先统计高频数字 token 构建词表（给每个数字分配唯一 ID，预留 PAD/UNK），再把文本转换成固定长度的 token ID 序列（超长截断、超短补 PAD）。
 * **TextDataset（文本数据集）**：封装 token ID 序列和标签，按索引返回单条样本（包含 input_ids 和可选 labels），适配 PyTorch 数据加载逻辑。
-
 * **textcnn_model**:
-  * **嵌入层（Embedding）**：把 token ID 转换为稠密向量（embedding_dim 维度），忽略<PAD>的向量更新；
+
+  * **嵌入层（Embedding）**：把 token ID 转换为稠密向量（embedding_dim 维度），忽略 `<PAD>`的向量更新；
   * **卷积层（Conv1d）**：多尺寸卷积核（如 2/3/4/5）提取不同长度的文本特征（类似 N-gram）；
   * **池化层（MaxPool1d）**：对卷积结果取最大值，保留关键特征；
   * **分类层（Linear）**：拼接所有卷积核的池化结果，映射到类别数维度。
@@ -51,6 +86,7 @@
 下图为TextCNN模型的示意图，从左至右依次为嵌入层、卷积层、池化层与分类层
 
 ![textcnn.png](fig/textcnn.png)
+
 * **FocalLoss（聚焦损失）**：基于交叉熵损失，通过 (1-pt)^gamma 调制因子，降低易分类样本权重、聚焦难分类样本（解决类别不平衡）。
 * **TextCNNModel（模型适配器）**：
   * **_select_hyperparams（动态调参）**：根据训练集文本长度（95% 分位数）调整 max_length，按词表规模调整 embedding_dim，按文本中位数长度调整卷积核尺寸。
@@ -89,7 +125,7 @@ transformer 模型广泛的运用在各种模型中，可以处理自然语言�
   * **Multi-Headed Self-Attention（多头自注意力）**：让模型同时关注输入中的所有单词，并计算它们之间的关系。
   * **Norm（层归一化）**：稳定训练过程，防止数值过大或过小（类似"调音量"到合适范围）。
   * **Feed-Forward Network（前馈神经网络）**：对每个单词的表示进行进一步加工（比如提取更复杂的特征）。
-* **decoder(X)**
+* **decoder(X) 删除**
 * **masked mean pooling**
 
   * 把 `[B, L, D]` 的 token 表示，用 mask 把 PAD 位置的向量清零，按 mask 对非 PAD 位置做平均，
@@ -153,6 +189,10 @@ else:
     lr = base_lr * 0.5 * (1 + cos(π * progress))
 ```
 
+Warmup 整体趋势如下图所示。橙色区域表示 15% 的线性 warmup，确保训练前期稳定；绿色区域表示余弦衰减段，确保后期细致收敛。
+
+![动态学习率调度](fig/dynamic_lr_schedule.png)
+
 ##### Focal Loss
 
 ```python
@@ -176,6 +216,10 @@ pt = torch.exp(-ce_loss)
 # Focal loss
 focal_loss = ((1 - pt) ** self.gamma * ce_loss).mean()
 ```
+
+难样本调制因子对损失曲线的影响如下图所示，横轴是模型对真实类别的置信度 $p_t$，纵轴是损失值。相比标准交叉熵（蓝色实线），Focal Loss 会在 $p_t$ 较大时迅速压低损失，$\gamma$ 越大这一效果越明显，从而把梯度主要留给低置信度、难分类的样本。
+
+![Focal Loss 曲线](fig/focal_loss_curve.png)
 
 ##### 多轮推理(TTA)
 
@@ -218,33 +262,23 @@ for step in range(0, len(data), 16):
 
 #### 3.3.2 训练参数与调参
 
-```python
-vocab_size = 7000              # 更大词汇表覆盖 (6000->7000->7000)
-d_model = 768                  # BERT-base级别 (512->768->768)
-num_layers = 10                # 更深 (6->8->10)
-num_heads = 12                 # 更多注意力 (8->10->12)
-d_ff = 3072                    # 4倍模型维度 (2048->3072->3072)
-max_length = 2560              # 覆盖95%样本 (512->1024->2560)
-dropout = 0.2                  # 优化过拟合 (0->0.1->0.2)
-batch_size = 16                # 配合梯度累积
-learning_rate = 1.2e-5         # 更稳定 (1e-4->2e-5->1.2e-5)
-epochs = 20                    # 充分训练 (10->15->20)
-warmup_ratio = 0.15            # warmup步数 (0->0.1->0.15)
-label_smoothing = 0.1          # 标签平滑 (0->0.1->0.1)
-gradient_accumulation = 2      # 有效batch=32 (0->2->2)
-```
+| 参数                     | 最终值 | 调整轨迹 / 理由                                                     |
+| ------------------------ | -----: | ------------------------------------------------------------------- |
+| 词表大小 `vocab_size`  |   7000 | 逐步扩大（6000→7000）以覆盖更多高频数字 token，减少 `<UNK>` 比例 |
+| 隐层维度 `d_model`     |    768 | 从 512 提升到 BERT-base 规格，匹配更深网络容量                      |
+| 编码层数 `num_layers`  |     10 | 6→8→10，增加表达能力以适应长序列模式                              |
+| 注意力头数 `num_heads` |     12 | 8→10→12，提升不同子空间的关注能力                                 |
+| 前馈维度 `d_ff`        |   3072 | 保持 4×d_model 的经典配置，提供更强非线性投影                      |
+| 最大长度 `max_length`  |   2560 | 512→1024→2560，覆盖 95%+ 样本长度，配合滑窗减少截断损失           |
+| Dropout                  |    0.2 | 从 0→0.1→0.2，缓解深层模型过拟合                                  |
+| Batch size               |     16 | 配合梯度累积步数 2，实现等效 32 的大批次稳定性                      |
+| 学习率                   | 1.2e-5 | 1e-4→2e-5→1.2e-5，结合 warmup + cosine，训练更平滑                |
+| Epochs                   |     20 | 10→15→20，保留更充分的收敛时间                                    |
+| Warmup ratio             |   0.15 | 0→0.1→0.15，避免初期震荡                                          |
+| Label smoothing          |    0.1 | 0→0.1，稳定 logits、提高泛化                                       |
+| Gradient accumulation    |      2 | 0→2，减少显存占用且保持高有效 batch                                |
 
-* 参数调整
-
-注释中标记了3次主要训练中的参数调节过程，总体变化趋势是参数量逐渐增大，实际上进行了不止3次训练，但报告中选取能造成表现较显著进步的训练参数进行调参报告。
-
-* 第一次训练参数较为保守，同时没有对 loss, label, infer, lr 进行优化改造，所以不少参数还是0。
-* 第一次训练测试结果为0.91。
-* 第二次训练在采取优化后进行训练，同时最大的变化是增加模型深度和注意力头数，并降低学习率，启用动态学习率，推测这3项变化对测试结果的提升最为明显。
-* 第二次训练测试结果为0.94。
-* 第三次训练最主要增加了最大长度，做到覆盖所有样本，并小幅增加了训练epoch。
-* 第三次训练测试结果为0.95。
-* 三次训练均采用 2x4090，训练时长约 10h。
+逐轮调参的核心经验是“先扩容表达能力，再精细化训练策略”。保守的首轮配置在未做损失/推理优化的情况下仅 0.91；第二轮通过加深网络、增加注意力头并启用动态学习率，准确率跃升至 0.94；第三轮重点拉高 `max_length` 与训练轮次，准确率进一步提升到 0.95。所有实验都在 2×RTX 4090（约 10 小时/轮）上完成。
 
 #### 3.3.3 训练过程
 
@@ -276,13 +310,31 @@ gradient_accumulation = 2      # 有效batch=32 (0->2->2)
 
 #### 3.5.1 方案
 
-有两种方法得到集成学习的结果，方法一串行训练若干个模型，可以指定模型类型为集成学习的模型(bert_ensemble)：
+有两种方法得到集成学习的结果，方法一是 Boosting，串行训练若干个模型并加权组合，可以指定模型类型为集成学习的模型(bert_ensemble)：
 
 ```bash
 python main.py train --model-spec bert_ensemble --epochs 20 --batch-size 8 --learning-rate 1.5e-5 --model-out models/bert_ens.pt
 ```
 
-方法二是通过已有的模型文件进行集成推理，这种方法是并行的：
+```mermaid
+graph LR
+  D[训练数据集 D] --> W0[初始化权重/残差]
+  W0 --> M1[弱模型1]
+  M1 --> E1[计算误差]
+  E1 --> W1[更新权重/残差]
+  W1 --> M2[弱模型2]
+  M2 --> E2[计算误差]
+  E2 --> W2[更新权重/残差]
+  W2 --> MK[重复迭代到第K个弱模型]
+
+  M1 --> C[加权组合]
+  M2 --> C
+  MK --> C
+  C --> Y[最终预测]
+
+```
+
+方法二是 Bagging，进行并行训练 + 平均/投票：
 
 ```bash
 python infer_bert_ensemble.py \
@@ -292,7 +344,29 @@ python infer_bert_ensemble.py \
   --use-tta --tta-rounds 5   # 可选
 ```
 
-在实际操作时，受限于显存的大小与训练成本，最终没有选择串行训练的方法，而是直接通过 BERT 方案中训练的 3 个模型进行并行推理。
+```mermaid
+graph LR
+  D[训练数据集 D] --> B1[Bootstrap重采样/随机子特征 1]
+  D --> B2[Bootstrap重采样/随机子特征 2]
+  D --> B3[Bootstrap重采样/随机子特征 3]
+  D --> BK[Bootstrap重采样/随机子特征 K]
+
+  B1 --> M1[模型1]
+  B2 --> M2[模型2]
+  B3 --> M3[模型3]
+  BK --> MK[模型K]
+
+  M1 --> A[聚合: 平均/投票]
+  M2 --> A
+  M3 --> A
+  MK --> A
+
+  A --> Y[最终预测]
+```
+
+在实际操作时，受限于显存的大小与训练成本，最终没有选择串行训练的方法，但代码展示了实现方法。而是直接通过 BERT 方案中训练的 3 个模型进行并行推理，同时需要说明的是，这里并没有采用典型的 Bagging 进行重采样选取特征等操作(又要重新训，太贵了😢)，也就是每个模型都是单独用一套训练集训练的，但仍然取得了一些提升。
+
+事实上，这里也可以用不同的模型类型进行集成学习，不限于都适用 BERT 模型。
 
 #### 3.5.2 结果
 
@@ -319,7 +393,7 @@ python infer_bert_ensemble.py \
 模型输出类别分布$q_θ(y∣x)$。
 真实标签对应的分布是 one-hot 的$p(y∣x)$。
 
-最小化交叉熵：
+最小化交叉熵(one-hot 消掉了求和号)：
 
 $$
 H(p,q)=−y∑p(y∣x)\log q_θ(y∣x)=−\log⁡ q_θ(y_{true}∣x)
@@ -341,16 +415,42 @@ $$
 
 `train_bert_log_example.log` 为训练所产生的 log 文件，但这个文件并不是第 3 节中产生的较优解相对应的 log 文件，为了在单 gpu 上完成训练所采取的参数都进行了减弱，所以最终准确率并没有那么高。
 
-## 5 比赛排名
+## 5 代码结构概览
+
+```mermaid
+graph TD
+  main[main.py CLI] -->|train 子命令| train_entry[train.py]
+  main -->|infer 子命令| infer_entry[infer.py]
+
+  train_entry --> data_utils[data_utils.py\nload_data]
+  train_entry --> registry[models/registry.py]
+  registry --> base[models/base.py]
+
+  base --> textcnn[models/textcnn_model.py]
+  base --> transformer[models/transformer_model.py]
+  base --> bert_local[models/bert_model.py]
+  base --> bert_hf[models/bert_finetune.py]
+  base --> ensemble_model[models/bert_ensemble.py]
+
+  train_entry --> outputs[模型保存 / 日志]
+  infer_entry --> data_utils
+  infer_entry --> registry
+  infer_entry --> ensemble_infer[infer_bert_ensemble.py]
+
+  bert_hf --> hf_trainer[HuggingFace Trainer]
+  bert_local --> pytorch_stack[PyTorch BERT Stack]
+```
+
+## 6 比赛排名
 
 截止 12 月 12 日的排名如下图所示。
 
 ![alt text](fig/2025-12-11_19.56.22.png)
 
-## 6 团队成员分工
+## 7 团队成员分工
 
-该仓库在 github 上链接为 [https://github.com/HIJII-ZHANG/tianchi-nlp-news-classification](https://github.com/HIJII-ZHANG/tianchi-nlp-news-classification)，详细贡献可以查看。大致分工如下：
+该仓库在 github 上链接为 [https://github.com/HIJII-ZHANG/tianchi-nlp-news-classification](https://github.com/HIJII-ZHANG/tianchi-nlp-news-classification)，详细贡献可以查看commit。大致分工如下：
 
-zhc(HIJII-ZHANG) 负责主要代码编写、运行训练、提交结果和撰写报告。
+(HIJII-ZHANG) 负责主要代码编写、运行训练、提交结果和撰写报告。
 
-gzk(GuoZhikang2007) 修复了一些 bug，并尝试进行优化和撰写报告。
+(GuoZhikang2007) 修复了一些 bug，并尝试进行优化和撰写报告。
