@@ -10,7 +10,6 @@ wheels/
 .venv
 *.csv
 *.pt
-*.log
 *.joblib
 data/
 .idea/

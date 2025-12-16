@@ -329,19 +329,25 @@ $$
 
 回归任务与分类任务不同的是预测连续变量的概率分布，但最小化交叉熵也可以使得分布更靠近真实分布，和分类任务是相似的。
 
-## 4 推理与输出示例
+## 4 相关示例
+
+### 4.1 推理与输出示例
 
 本部分采用对单条文本进行推理，输出其预测结果和 score。
 
 ![alt text](fig/infer_example.png)
 
-## 4 比赛排名
+### 4.2 log 文件
+
+`train_bert_log_example.log` 为训练所产生的 log 文件，但这个文件并不是第 3 节中产生的较优解相对应的 log 文件，为了在单 gpu 上完成训练所采取的参数都进行了减弱，所以最终准确率并没有那么高。
+
+## 5 比赛排名
 
 截止 12 月 12 日的排名如下图所示。
 
 ![alt text](fig/2025-12-11_19.56.22.png)
 
-## 5 团队成员分工
+## 6 团队成员分工
 
 该仓库在 github 上链接为 [https://github.com/HIJII-ZHANG/tianchi-nlp-news-classification](https://github.com/HIJII-ZHANG/tianchi-nlp-news-classification)，详细贡献可以查看。大致分工如下：
 
